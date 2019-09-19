@@ -5,12 +5,40 @@ import numpy as np
 
 from optimize_mixture_profiles import mixture_of_not_normals
 
-def ser_model(radii, sersic):
-    from optimize_mixture_profiles import hogg_model
-    # Ramp down like the 'hogg_lux' model
-    target = hogg_model(radii, sersic)
-    inner = 3.
-    outer = 4.
+def get_outer_radius(ser):
+    if ser <= 1.:
+        max_radius = 4.
+    elif ser >= 4.:
+        max_radius = 8.
+    else:
+        max_radius = 4. + 4.*(ser - 1.)/(4.-1.)
+    return max_radius
+
+def get_radii(ser):
+    max_radius = get_outer_radius(ser)
+    rstep = 0.001
+    radii = np.arange(rstep/2., max_radius, rstep)
+    return radii
+
+def ser_model(radii, sersic, **kwa):
+    from optimize_mixture_profiles import hogg_model, hogg_ser
+
+    # Softening the core of the Sersic profile at very small radius
+    # (to avoid wasting Gaussian components fitting them).
+    # This ramps between the "lux" and "luv" models.
+    if sersic <= 1.:
+        soft = 0.
+    elif sersic >= 4.:
+        soft = 4e-4
+    else:
+        soft = 4e-4*(sersic - 1.)/(4.-1.)
+
+    # Set the maximum radius of the fit based on the Sersic model
+    # And ramp the profile down to zero along the last 1 r_e of the radius.
+    # This also interpolates between "lux" and "luv".
+    target = hogg_ser(radii, sersic, soft=soft)
+    outer = get_outer_radius(sersic)
+    inner = outer - 1
     target[radii > outer] *= 0.
     middle = (radii >= inner) * (radii <= outer)
     target[middle] *= (1. - ((radii[middle] - inner) / (outer - inner)) ** 2) ** 2
@@ -129,7 +157,7 @@ def plot_one_row(n, a, v, xx):
             #plt.axis(ax)
         plt.title('Sersic %.2f' % n)
 
-def fit_range(sersics, radii, init, priors=None, ps=None):
+def fit_range(sersics, init, priors=None, ps=None):
     a,v = init
     initamps = np.array(a)
     initvars = np.array(v)
@@ -146,6 +174,9 @@ def fit_range(sersics, radii, init, priors=None, ps=None):
             assert(len(p) == len(a))
 
     for iser,sersic in enumerate(sersics):
+
+        radii = get_radii(sersic)
+
         target = ser_model(radii, sersic)
         #print('Sersic %.2f' % sersic, 'ini at',
         #      'amps', ', '.join(['%.4g'%a for a in initamps]),
@@ -162,7 +193,8 @@ def fit_range(sersics, radii, init, priors=None, ps=None):
         fitamps = pars[:len(pars)//2].copy()
         fitvars = pars[len(pars)//2:].copy()
 
-        I = np.argsort(-fitamps)
+        #I = np.argsort(-fitamps)
+        I = np.argsort(-fitvars)
         fitamps = fitamps[I]
         fitvars = fitvars[I]
 
@@ -181,14 +213,27 @@ def fit_range(sersics, radii, init, priors=None, ps=None):
 
         if ps is not None:
             plt.clf()
+
+            # rfine = np.logspace(-4, 1, 300)
+            # tfine = ser_model(rfine, sersic)
+            # tfinesoft = ser_model(rfine, sersic, soft=4e-4)
+            # plt.plot(rfine, tfine, 'm-')
+            # plt.plot(rfine, tfinesoft, 'g-')
+
+            mx = max(target)
             plt.plot(radii, target, 'r-')
             for ai,vi in zip(fitamps, fitvars):
                 mi = mixture_of_not_normals(radii, np.array([ai,vi]))
-                plt.plot(radii, mi, 'b-', alpha=0.3)
+                c = 'b'
+                if np.sum(mi) < 0:
+                    mi *= -1
+                    c = 'm'
+                plt.plot(radii, mi, '-', color=c, alpha=0.3)
+                mx = max(mx, max(mi))
             mix = mixture_of_not_normals(radii, np.append(fitamps, fitvars))
             plt.plot(radii, mix, 'k-')
             plt.title('n=%.4f, priors: %s' % (sersic, prior))
-            mx = max(max(target), max(mix))
+            mx = max(mx, max(mix))
             plt.yscale('log')
             plt.ylim(mx*1e-6, mx*1.1)
             plt.xscale('log')
@@ -229,11 +274,6 @@ def sample_sersic(radii, target, pars):
     return p2
 
 def main():
-
-    max_radius = 4.
-    rstep = 0.001
-    radii = np.arange(rstep/2., max_radius, rstep)
-
     # emcee
     # init_04 = ([25.35, 8.269, -25.22], [0.5045, 0.3587, 0.4013])
     # sersic = 0.4
@@ -263,11 +303,12 @@ def main():
     #all_logprobs = []
 
     sersics7 = np.array([6.1, 6.2, 6.3])
-    init_7 = ([ 9.78462, 5.92346, 3.08624, 1.37584,
-                0.528399, 0.17315, 0.0471669, 0.0111288,  ],
-                [ 1.52991, 0.132595, 0.0169103, 0.00245378,
-                  0.000366884, 5.27404e-05, 6.76674e-06, 6.00242e-07, ])
-    
+    # init_7 = ([ 9.78462, 5.92346, 3.08624, 1.37584,
+    #             0.528399, 0.17315, 0.0471669, 0.0111288,  ],
+    #             [ 1.52991, 0.132595, 0.0169103, 0.00245378,
+    #               0.000366884, 5.27404e-05, 6.76674e-06, 6.00242e-07, ])
+    init_7 = ([ 6.87598, 6.01584, 4.65195, 3.14545, 1.88867, 0.990882, 0.404981, 0.0785137,  ], [ 8.75587, 1.14398, 0.217394, 0.0477077, 0.0112856, 0.00277359, 0.000690429, 0.000169168,  ])
+
     sersics6 = np.array([6.0, 5.5, 5.0, 4.5, 4.0, 3.5, 3.0, 2.7])
     init_6 = ([0.0113067,  0.04898785,  0.18195408,  0.55939775,
                1.46288372, 3.28556791,  6.27896305,  9.86946446],
@@ -281,11 +322,10 @@ def main():
     n = [None]*7
     priors4 = [n+[1e-1], n+[1e-2], n+[1e-3], n+[1e-4], n+[1e-5], n+[1e-6]]
 
-    sersics3 = np.array([3.2, 3.1, 3., 2.5, 2., 1.9, 1.8, 1.7, 1.6, 1.5])
-    init3 = ([7.872, 5.073, 2.661, 1.112, 0.3659, 0.09262, 0.01655],
-             [2.095, 0.3306, 0.06875, 0.01458, 0.002892, 0.0004967, 6.458e-05])
+    sersics3 = np.array([3.1, 3., 2.7, 2.5, 2.3, 2.1, 2., 1.9, 1.8, 1.7, 1.6, 1.5])
+    init3 = ([ 5.91409, 5.9398, 3.97918, 2.01211, 0.798292, 0.239767, 0.040112,  ], [ 5.36623, 0.867383, 0.179783, 0.0394844, 0.00851896, 0.0017002, 0.000290821,  ])
     n = [None]*6 
-    priors3 = [None]*5 + [n+[1e-4], n+[3e-4], n+[1e-5], n+[3e-5], n+[1e-6]]
+    priors3 = [None]*7 + [n+[1e-4], n+[3e-4], n+[1e-5], n+[3e-5], n+[1e-6]]
 
     sersics15 = np.array([1.55, 1.51, 1.5, 1.4, 1.3, 1.2, 1.1, 1.0])
     init15 = ([6.653, 4.537, 1.776, 0.5341, 0.121, 0.01932],
@@ -318,11 +358,13 @@ def main():
                           [None,None,None, 1e-4],]
 
     ### USE THIS 2->3 ~ 0.53
-    sersicsC2 = np.array([0.57, 0.56, 0.55, 0.54, 0.53, 0.52, 0.515, 0.51])
+    sersicsC2 = np.array([0.57, 0.56, 0.55, 0.54, 0.53, 0.52, 0.515, 0.51,])
+
     initC2 = [ 6.44901, 2.83301, 0.218781 ], [ 0.892218, 0.508317, 0.17374 ]
     priorsC2 = [None]*4 + [[None, None, 0.1], [None, None, 0.01],
-                           [None, None, 0.003], [None, None, 0.001]]
-    
+                           [None, None, 0.003], 
+                           [None, None, 0.01]]
+
     dser = 0.01
     sersicsD = np.arange(0.61, 0.50+dser/2., -dser)
     init_055 = ([7.747, 1.589],
@@ -335,13 +377,13 @@ def main():
     sersicsF = np.arange(0.5-dser, 0.4-dser/2., -dser)
     init_049 = ([9.24, -0.23], [0.71, 0.33])
 
-    sersicsG = np.arange(0.42, 0.29-dser/2., -dser)
-    init_04 = ([ 13.5581, 0.433216, -5.44774,  ], [ 0.575113, 0.304652, 0.385431,  ])
-
     # Ramp between N=3 and N=2 around n~0.4
     sersicsFG = np.array([0.39, 0.40, 0.41, 0.42])
     initFG = ([ 15.4473, 1.43828, -8.47514,  ], [ 0.540383, 0.28262, 0.365116,  ])
     priorsFG = [ [None, 1., None], [None, 0.5, None], [None, 0.25, None], [None, 0.125, None] ]
+
+    sersicsG = np.arange(0.42, 0.29-dser/2., -dser)
+    init_04 = ([ 13.5581, 0.433216, -5.44774,  ], [ 0.575113, 0.304652, 0.385431,  ])
 
     # Ramp between N=4 and N=2, n~0.6
     sersicsCD = np.array([0.6, 0.59, 0.58, 0.57, 0.57, 0.57 ])#, 0.56, 0.55, 0.54])
@@ -353,6 +395,7 @@ def main():
                  [None,None,None, 0.0001],
                  [None,None,None, 0.00003],
                  ]
+    
     # priorsCD = [ [None,None, 0.3, 0.01],
     #              [None,None, 0.1, 0.003],
     #              [None,None, 0.03, 0.001], 
@@ -378,27 +421,26 @@ def main():
     
     
     for sersics,ini,priors,patch in [
-        # (sersics7, init_7,   None, False),
-        # (sersics6, init_6,   None, False),
+        (sersics7, init_7,   None, False),
+        (sersics6, init_6,   None, False),
         (sersics4, init4, priors4, False),
         #(sersics3, init3, priors3, False),
         #(sersics15, init15, None, False),
         #(sersicsA, initA,  priorsA, False),
         #(sersicsB, initB, priorsB, False),
         #(sersicsC, initC,  priorsC, False),
-        # (sersicsD, init_055, None, False),
-        # (sersicsE, init_05,  None, False),
-        # (sersicsF, init_049, None, True),
-        # (sersicsF, init_049, None, False),
-        # (sersicsG, init_04, None, False),
-        #(sersicsFG, initFG, priorsFG, False),
-        #(sersicsC, init_07,  None, False),
         #(sersicsC2, initC2,  priorsC2, False),
         #(sersicsD, init_055, None, False),
-        #(sersicsCD, initCD, priorsCD, False),
+        #(sersicsE, init_05,  None, False),
+        # (sersicsF, init_049, None, True),
+        #(sersicsF, init_049, None, False),
+        #(sersicsFG, initFG, priorsFG, False),
+        #(sersicsG, init_04, None, False),
+        #(sersicsC, init_07,  None, False),
+        #(sersicsD, init_055, None, False),
         #(sersicsCD2, initCD2, priorsCD2, False),
         ]:
-        amps,vars,loglikes = fit_range(sersics, radii, ini, priors=priors, ps=ps)
+        amps,vars,loglikes = fit_range(sersics, ini, priors=priors, ps=ps)
 
         # amps2,vars2,loglikes2 = fit_range(reversed(sersics), radii,
         #                                   (amps[-1], vars[-1]))
